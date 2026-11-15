@@ -1,0 +1,32 @@
+name: 打包 nao (Agentic BI) 离线包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack-nao:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 克隆仓库并改造 docker-compose.yml 为离线镜像模式
+        run: |
+          git clone --depth 1 https://github.com/getnao/nao.git
+          python3 -c '
+          p = "nao/docker-compose.yml"
+          s = open(p).read()
+          s = s.replace("  build:\n    context: .\n    dockerfile: Dockerfile", "  image: getnao/nao:latest")
+          open(p, "w").write(s)
+          '
+
+      - name: 2. 拉取官方现成镜像并压缩打包
+        run: |
+          docker pull getnao/nao:latest
+          docker pull postgres:16-alpine
+          docker save getnao/nao:latest postgres:16-alpine | gzip > nao-images.tar.gz
+
+      - name: 3. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: nao-offline-bundle
+          path: |
+            nao-images.tar.gz
+            nao/
