@@ -1,0 +1,29 @@
+name: 打包 WrenAI (Docker 全栈版) 离线包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack-wrenai:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 克隆 WrenAI legacy/v1 分支并初始化模板配置
+        run: |
+          git clone --depth 1 -b legacy/v1 https://github.com/Canner/WrenAI.git
+          cd WrenAI/docker
+          cp .env.example .env
+          if [ -f config.example.yaml ]; then cp config.example.yaml config.yaml; fi
+
+      - name: 2. 拉取全套现成镜像并压缩打包
+        run: |
+          cd WrenAI/docker
+          docker compose pull
+          docker compose config --images | sort -u | xargs docker save | gzip > ../../wrenai-images.tar.gz
+
+      - name: 3. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrenai-offline-bundle
+          path: |
+            wrenai-images.tar.gz
+            WrenAI/docker/
