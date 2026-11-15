@@ -1,0 +1,29 @@
+name: 打包 OpenHands 离线包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack-openhands:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 读取 OpenHands 官方最新版本号
+        id: get_version
+        run: |
+          git clone --depth 1 https://github.com/OpenHands/OpenHands.git
+          VERSION=$(python3 -c 'import json; print(json.load(open("OpenHands/.release-please-manifest.json"))["."])')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "检测到官方发布版本: $VERSION"
+
+      - name: 2. 拉取官方镜像并压缩打包
+        run: |
+          IMAGE="ghcr.io/openhands/agent-canvas:${{ steps.get_version.outputs.version }}"
+          docker pull "$IMAGE"
+          docker tag "$IMAGE" ghcr.io/openhands/agent-canvas:latest
+          docker save "$IMAGE" ghcr.io/openhands/agent-canvas:latest | gzip > openhands-image.tar.gz
+
+      - name: 3. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: openhands-offline-bundle
+          path: openhands-image.tar.gz
