@@ -1,0 +1,64 @@
+name: 打包 DeepAnalyze 离线包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack-deepanalyze:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 克隆 DeepAnalyze 源码
+        run: git clone --depth 1 https://github.com/ruc-datalab/DeepAnalyze.git
+
+      - name: 2. 构建并导出离线 Docker 镜像
+        run: |
+          cd DeepAnalyze
+          IMAGES=""
+
+          # 情况1：若 docker/ 下存在 docker-compose 编排文件，按官方编排构建与拉取
+          if [ -f docker/docker-compose.yml ] || [ -f docker/docker-compose.yaml ]; then
+            cd docker
+            [ -f .env.example ] && cp -n .env.example .env
+            docker compose build
+            docker compose pull --ignore-buildable || true
+            IMAGES=$(docker compose config --images | sort -u | tr '\n' ' ')
+            cd ..
+          # 情况2：若 docker/ 下存在 Dockerfile，逐个构建并打标签
+          elif ls docker/Dockerfile* 1> /dev/null 2>&1; then
+            for df in docker/Dockerfile*; do
+              name=$(basename "$df" | tr '[:upper:].' '[:lower:]-')
+              tag="deepanalyze-${name}:latest"
+              [ "$name" = "dockerfile" ] && tag="deepanalyze:latest"
+              docker build -f "$df" -t "$tag" .
+              IMAGES="$IMAGES $tag"
+            done
+          fi
+
+          # 兜底：若未生成应用主镜像，自动构建包含 WebUI v2 + API 的全栈镜像
+          if ! echo "$IMAGES" | grep -q "deepanalyze:latest"; then
+            cat << 'EOF' > Dockerfile.offline
+          FROM python:3.12-slim-bookworm
+          WORKDIR /app
+          RUN apt-get update && apt-get install -y --no-install-recommends curl git build-essential nodejs npm && rm -rf /var/lib/apt/lists/*
+          COPY requirements.txt ./
+          RUN pip install --no-cache-dir -r requirements.txt
+          COPY . .
+          RUN if [ -d demo/chat_v2/frontend ]; then cd demo/chat_v2/frontend && npm install --legacy-peer-deps && npm run build; fi
+          EXPOSE 4000 8200
+          CMD ["bash", "-c", "cd /app/demo/chat_v2 && [ -f .env.example ] && cp -n .env.example .env; bash start.sh && tail -f /dev/null"]
+          EOF
+            docker build -f Dockerfile.offline -t deepanalyze:latest .
+            IMAGES="$IMAGES deepanalyze:latest"
+          fi
+
+          # 导出全部镜像并删除 .git 目录减小体积
+          docker save $(echo $IMAGES | xargs) | gzip > ../deepanalyze-images.tar.gz
+          rm -rf .git
+
+      - name: 3. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepanalyze-offline-bundle
+          path: |
+            deepanalyze-images.tar.gz
+            DeepAnalyze/
