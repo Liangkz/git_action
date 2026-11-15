@@ -15,6 +15,8 @@ jobs:
           sed -i 's|python:3.11-slim|python:3.11-slim-bookworm|g' Dockerfile
           # 修复2：去掉国内 Docker 镜像加速前缀，避免海外服务器拉取限流
           sed -i 's|docker.m.daocloud.io/library/||g' Dockerfile
+          # 修复3：锁定 pnpm 为 9.x，避开 pnpm v10 默认拦截 esbuild 构建脚本的问题
+          sed -i 's|npm install -g pnpm|npm install -g pnpm@9|g' Dockerfile
 
       - name: 2. 云端编译 Docker 镜像
         run: |
