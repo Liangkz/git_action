@@ -1,0 +1,27 @@
+name: 打包 JoyAgent-JDGenie 离线包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack-genie:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 克隆 JoyAgent-JDGenie 源码
+        run: git clone --depth 1 https://github.com/jd-opensource/joyagent-jdgenie.git
+
+      - name: 2. 云端编译 Docker 镜像
+        run: |
+          cd joyagent-jdgenie
+          docker build -t genie:latest .
+
+      - name: 3. 导出并压缩离线镜像
+        run: docker save genie:latest | gzip > genie-image.tar.gz
+
+      - name: 4. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: joyagent-jdgenie-offline-bundle
+          path: |
+            genie-image.tar.gz
+            joyagent-jdgenie/
