@@ -7,8 +7,14 @@ jobs:
   pack-genie:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 克隆 JoyAgent-JDGenie 源码
-        run: git clone --depth 1 https://github.com/jd-opensource/joyagent-jdgenie.git
+      - name: 1. 克隆并修复 Dockerfile 兼容问题
+        run: |
+          git clone --depth 1 https://github.com/jd-opensource/joyagent-jdgenie.git
+          cd joyagent-jdgenie
+          # 修复1：锁定 Python 基础镜像为 Debian 12 (bookworm)，解决 apt 依赖冲突
+          sed -i 's|python:3.11-slim|python:3.11-slim-bookworm|g' Dockerfile
+          # 修复2：去掉国内 Docker 镜像加速前缀，避免海外服务器拉取限流
+          sed -i 's|docker.m.daocloud.io/library/||g' Dockerfile
 
       - name: 2. 云端编译 Docker 镜像
         run: |
