@@ -1,0 +1,19 @@
+name: 打包 SQLBot 离线包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack-sqlbot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 拉取官方现成镜像并压缩打包
+        run: |
+          docker pull dataease/sqlbot:latest
+          docker save dataease/sqlbot:latest | gzip > sqlbot-image.tar.gz
+
+      - name: 2. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: sqlbot-offline-bundle
+          path: sqlbot-image.tar.gz
