@@ -1,13 +1,14 @@
-name: 打包 LibreChat 离线包
+name: 打包内网离线 Docker 镜像
 
 on:
   workflow_dispatch:
 
 jobs:
-  pack:
+  # 任务 1：LibreChat（如果已下载完，可删除此 job）
+  pack-librechat:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 下载 LibreChat 编排文件
+      - name: 1. 拉取 LibreChat 代码与配置
         run: |
           git clone --depth 1 https://github.com/LibreChat-AI/LibreChat.git
           cd LibreChat
@@ -19,10 +20,33 @@ jobs:
           docker compose pull
           docker compose config --images | xargs docker save | gzip > ../librechat-images.tar.gz
 
-      - name: 3. 打包供浏览器下载
+      - name: 3. 上传 LibreChat 离线包
         uses: actions/upload-artifact@v4
         with:
           name: librechat-offline-bundle
           path: |
             librechat-images.tar.gz
             LibreChat/
+
+  # 任务 2：JoyAgent-JDGenie（从 Dockerfile 云端编译并打包）
+  pack-genie:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 克隆 JoyAgent-JDGenie 源码
+        run: git clone --depth 1 https://github.com/jd-opensource/joyagent-jdgenie.git
+
+      - name: 2. 云端编译 Docker 镜像
+        run: |
+          cd joyagent-jdgenie
+          docker build -t genie:latest .
+
+      - name: 3. 导出并压缩离线镜像
+        run: docker save genie:latest | gzip > genie-image.tar.gz
+
+      - name: 4. 上传 JoyAgent-JDGenie 离线包
+        uses: actions/upload-artifact@v4
+        with:
+          name: joyagent-jdgenie-offline-bundle
+          path: |
+            genie-image.tar.gz
+            joyagent-jdgenie/
