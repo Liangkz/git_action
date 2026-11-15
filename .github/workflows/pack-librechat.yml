@@ -1,0 +1,28 @@
+name: 打包 LibreChat 离线包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 下载 LibreChat 编排文件
+        run: |
+          git clone --depth 1 https://github.com/LibreChat-AI/LibreChat.git
+          cd LibreChat
+          cp .env.example .env
+
+      - name: 2. 拉取全部镜像并压缩打包
+        run: |
+          cd LibreChat
+          docker compose pull
+          docker compose config --images | xargs docker save | gzip > ../librechat-images.tar.gz
+
+      - name: 3. 打包供浏览器下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: librechat-offline-bundle
+          path: |
+            librechat-images.tar.gz
+            LibreChat/
