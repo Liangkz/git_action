@@ -1,0 +1,85 @@
+name: 打包 Code Interpreter 离线包
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "GHCR 镜像标签，例如 main 或 sha-<commit>"
+        required: true
+        default: main
+        type: string
+
+jobs:
+  pack-code-interpreter:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 克隆仓库
+        run: |
+          git clone --depth 1 https://github.com/LibreChat-AI/code-interpreter.git code-interpreter
+
+      - name: 拉取项目镜像和依赖镜像
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          images=(
+            "ghcr.io/librechat-ai/code-interpreter-api:${IMAGE_TAG}"
+            "ghcr.io/librechat-ai/code-interpreter-worker:${IMAGE_TAG}"
+            "ghcr.io/librechat-ai/code-interpreter-file-server:${IMAGE_TAG}"
+            "ghcr.io/librechat-ai/code-interpreter-egress-gateway:${IMAGE_TAG}"
+            "ghcr.io/librechat-ai/code-interpreter-tool-call-server:${IMAGE_TAG}"
+            "ghcr.io/librechat-ai/code-interpreter-sandbox-runner:${IMAGE_TAG}"
+            "ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct:${IMAGE_TAG}"
+            "redis:7-alpine"
+            "quay.io/minio/minio"
+          )
+
+          for image in "${images[@]}"; do
+            docker pull "$image"
+          done
+
+          docker save "${images[@]}" | gzip -1 > code-interpreter/code-interpreter-images.tar.gz
+
+      - name: 生成离线 Compose 覆盖文件
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          cat > code-interpreter/docker-compose.offline.yml <<EOF
+          services:
+            api:
+              build: null
+              image: ghcr.io/librechat-ai/code-interpreter-api:${IMAGE_TAG}
+              pull_policy: never
+            service-worker:
+              build: null
+              image: ghcr.io/librechat-ai/code-interpreter-worker:${IMAGE_TAG}
+              pull_policy: never
+            file_server:
+              build: null
+              image: ghcr.io/librechat-ai/code-interpreter-file-server:${IMAGE_TAG}
+              pull_policy: never
+            egress_gateway:
+              build: null
+              image: ghcr.io/librechat-ai/code-interpreter-egress-gateway:${IMAGE_TAG}
+              pull_policy: never
+            tool_call_server:
+              build: null
+              image: ghcr.io/librechat-ai/code-interpreter-tool-call-server:${IMAGE_TAG}
+              pull_policy: never
+            sandbox-runner:
+              build: null
+              image: ghcr.io/librechat-ai/code-interpreter-sandbox-runner:${IMAGE_TAG}
+              pull_policy: never
+            redis:
+              pull_policy: never
+            minio:
+              pull_policy: never
+          EOF
+
+      - name: 上传离线包
+        uses: actions/upload-artifact@v4
+        with:
+          name: code-interpreter-offline-bundle
+          path: code-interpreter/
+          if-no-files-found: error
+          retention-days: 7
