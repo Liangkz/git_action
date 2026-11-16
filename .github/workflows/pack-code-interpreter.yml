@@ -1,85 +1,77 @@
-name: 打包 Code Interpreter 离线包
+name: 打包 LibreChat Code Interpreter 离线包
 
 on:
   workflow_dispatch:
-    inputs:
-      image_tag:
-        description: "GHCR 镜像标签，例如 main 或 sha-<commit>"
-        required: true
-        default: main
-        type: string
 
 jobs:
   pack-code-interpreter:
     runs-on: ubuntu-latest
-
     steps:
-      - name: 克隆仓库
+      - name: 1. 克隆源码并生成离线镜像覆盖配置
         run: |
-          git clone --depth 1 https://github.com/LibreChat-AI/code-interpreter.git code-interpreter
+          git clone --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
+          cd code-interpreter
+          [ -f .env.example ] && cp -n .env.example .env
 
-      - name: 拉取项目镜像和依赖镜像
-        env:
-          IMAGE_TAG: ${{ inputs.image_tag }}
-        run: |
-          images=(
-            "ghcr.io/librechat-ai/code-interpreter-api:${IMAGE_TAG}"
-            "ghcr.io/librechat-ai/code-interpreter-worker:${IMAGE_TAG}"
-            "ghcr.io/librechat-ai/code-interpreter-file-server:${IMAGE_TAG}"
-            "ghcr.io/librechat-ai/code-interpreter-egress-gateway:${IMAGE_TAG}"
-            "ghcr.io/librechat-ai/code-interpreter-tool-call-server:${IMAGE_TAG}"
-            "ghcr.io/librechat-ai/code-interpreter-sandbox-runner:${IMAGE_TAG}"
-            "ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct:${IMAGE_TAG}"
-            "redis:7-alpine"
-            "quay.io/minio/minio"
-          )
-
-          for image in "${images[@]}"; do
-            docker pull "$image"
-          done
-
-          docker save "${images[@]}" | gzip -1 > code-interpreter/code-interpreter-images.tar.gz
-
-      - name: 生成离线 Compose 覆盖文件
-        env:
-          IMAGE_TAG: ${{ inputs.image_tag }}
-        run: |
-          cat > code-interpreter/docker-compose.offline.yml <<EOF
+          # 生成预编译镜像覆盖文件（跳过耗时的本地源码编译，直接使用官方 :main 镜像）
+          cat << 'EOF' > docker-compose.images.yml
           services:
             api:
-              build: null
-              image: ghcr.io/librechat-ai/code-interpreter-api:${IMAGE_TAG}
-              pull_policy: never
+              build: !reset null
+              image: ghcr.io/librechat-ai/code-interpreter-api:main
+              pull_policy: missing
             service-worker:
-              build: null
-              image: ghcr.io/librechat-ai/code-interpreter-worker:${IMAGE_TAG}
-              pull_policy: never
+              build: !reset null
+              image: ghcr.io/librechat-ai/code-interpreter-worker:main
+              pull_policy: missing
             file_server:
-              build: null
-              image: ghcr.io/librechat-ai/code-interpreter-file-server:${IMAGE_TAG}
-              pull_policy: never
+              build: !reset null
+              image: ghcr.io/librechat-ai/code-interpreter-file-server:main
+              pull_policy: missing
             egress_gateway:
-              build: null
-              image: ghcr.io/librechat-ai/code-interpreter-egress-gateway:${IMAGE_TAG}
-              pull_policy: never
+              build: !reset null
+              image: ghcr.io/librechat-ai/code-interpreter-egress-gateway:main
+              pull_policy: missing
             tool_call_server:
-              build: null
-              image: ghcr.io/librechat-ai/code-interpreter-tool-call-server:${IMAGE_TAG}
-              pull_policy: never
+              build: !reset null
+              image: ghcr.io/librechat-ai/code-interpreter-tool-call-server:main
+              pull_policy: missing
             sandbox-runner:
-              build: null
-              image: ghcr.io/librechat-ai/code-interpreter-sandbox-runner:${IMAGE_TAG}
-              pull_policy: never
-            redis:
-              pull_policy: never
-            minio:
-              pull_policy: never
+              build: !reset null
+              image: ghcr.io/librechat-ai/code-interpreter-sandbox-runner:main
+              pull_policy: missing
           EOF
 
-      - name: 上传离线包
+          # 额外生成无 KVM 环境的覆盖配置（适用于未开启嵌套虚拟化的内网虚拟机）
+          cat << 'EOF' > docker-compose.nokvm.yml
+          services:
+            sandbox-runner:
+              image: ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct:main
+          EOF
+
+      - name: 2. 拉取全部官方镜像并压缩打包
+        run: |
+          cd code-interpreter
+          export CODEAPI_BRIDGE_TOKEN="placeholder_token_for_pull"
+          COMPOSE_FILE="docker-compose.yaml"
+          [ ! -f "$COMPOSE_FILE" ] && COMPOSE_FILE="docker-compose.yml"
+
+          # 拉取编排文件中定义的所有核心服务 + Redis + MinIO 镜像
+          docker compose -f "$COMPOSE_FILE" -f docker-compose.images.yml pull
+          # 额外拉取无 KVM 模式的沙箱镜像作为备用
+          docker pull ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct:main
+
+          # 汇总去重后导出为单个压缩包
+          ALL_IMAGES=$( (docker compose -f "$COMPOSE_FILE" -f docker-compose.images.yml config --images; echo "ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct:main") | sort -u )
+          echo "即将打包以下镜像："
+          echo "$ALL_IMAGES"
+          docker save $(echo "$ALL_IMAGES" | tr '\n' ' ') | gzip > ../code-interpreter-images.tar.gz
+          rm -rf .git
+
+      - name: 3. 上传离线包供下载
         uses: actions/upload-artifact@v4
         with:
           name: code-interpreter-offline-bundle
-          path: code-interpreter/
-          if-no-files-found: error
-          retention-days: 7
+          path: |
+            code-interpreter-images.tar.gz
+            code-interpreter/
