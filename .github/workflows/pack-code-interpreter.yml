@@ -7,13 +7,20 @@ jobs:
   pack-code-interpreter:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 克隆源码并生成离线镜像覆盖配置
+      - name: 1. 克隆源码并修正镜像源配置
         run: |
           git clone --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
           cd code-interpreter
           [ -f .env.example ] && cp -n .env.example .env
 
-          # 生成预编译镜像覆盖文件（跳过耗时的本地源码编译，直接使用官方 :main 镜像）
+          COMPOSE_FILE="docker-compose.yaml"
+          [ ! -f "$COMPOSE_FILE" ] && COMPOSE_FILE="docker-compose.yml"
+
+          # 修复：将已停止匿名访问的 quay.io/minio/minio 替换为 Docker Hub 公开镜像 minio/minio:latest
+          sed -i 's|quay.io/minio/minio\(:[^ ]*\)\?|minio/minio:latest|g' "$COMPOSE_FILE"
+          sed -i 's|quay.io/minio/mc\(:[^ ]*\)\?|minio/mc:latest|g' "$COMPOSE_FILE"
+
+          # 生成预编译镜像覆盖文件（直接使用官方 :main 镜像，跳过耗时编译）
           cat << 'EOF' > docker-compose.images.yml
           services:
             api:
