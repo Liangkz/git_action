@@ -1,0 +1,40 @@
+name: 打包 LobeHub 离线部署包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack-lobehub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 获取官方 docker-compose 部署文件与环境模板
+        run: |
+          mkdir -p lobehub-deploy
+          cd lobehub-deploy
+          # 下载官方最新生产环境编排文件与环境变量模板
+          curl -fsSL -O https://raw.githubusercontent.com/lobehub/lobehub/HEAD/docker-compose/deploy/docker-compose.yml
+          curl -fsSL -O https://raw.githubusercontent.com/lobehub/lobehub/HEAD/docker-compose/deploy/.env.example
+          cp .env.example .env
+
+      - name: 2. 解析并拉取全套依赖镜像并压缩打包
+        run: |
+          cd lobehub-deploy
+          # 自动提取 docker-compose.yml 中定义的所有镜像（含 LobeHub、ParadeDB、Redis、RustFS、SearXNG 等）
+          IMAGES=$(docker compose config --images | sort -u)
+          echo "即将拉取以下镜像："
+          echo "$IMAGES"
+
+          for img in $IMAGES; do
+            docker pull "$img"
+          done
+
+          # 将所有镜像打包压缩为单个离线归档文件
+          docker save $IMAGES | gzip > ../lobehub-images.tar.gz
+
+      - name: 3. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: lobehub-offline-bundle
+          path: |
+            lobehub-images.tar.gz
+            lobehub-deploy/
