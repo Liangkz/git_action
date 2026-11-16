@@ -7,7 +7,7 @@ jobs:
   pack-code-interpreter:
     runs-on: ubuntu-latest
     steps:
-      - name: 1. 克隆源码并修正镜像源配置
+      - name: 1. 克隆源码并从官方源码构建 MinIO 镜像
         run: |
           git clone --depth 1 https://github.com/LibreChat-AI/code-interpreter.git
           cd code-interpreter
@@ -16,11 +16,48 @@ jobs:
           COMPOSE_FILE="docker-compose.yaml"
           [ ! -f "$COMPOSE_FILE" ] && COMPOSE_FILE="docker-compose.yml"
 
-          # 修复：将已停止匿名访问的 quay.io/minio/minio 替换为 Docker Hub 公开镜像 minio/minio:latest
+          # 将编排文件中的 quay.io/minio/minio 统一指向本地构建的 minio/minio:latest
           sed -i 's|quay.io/minio/minio\(:[^ ]*\)\?|minio/minio:latest|g' "$COMPOSE_FILE"
           sed -i 's|quay.io/minio/mc\(:[^ ]*\)\?|minio/mc:latest|g' "$COMPOSE_FILE"
 
-          # 生成预编译镜像覆盖文件（直接使用官方 :main 镜像，跳过耗时编译）
+          # 从官方 GitHub 源码编译 MinIO（完全绕开 Docker Hub / Quay 下线限制）
+          cat << 'EOF' > Dockerfile.minio
+          FROM golang:1.24-alpine AS builder
+          RUN apk add --no-cache git
+          ENV GOTOOLCHAIN=auto
+          RUN git clone --depth 1 https://github.com/minio/minio.git /src && \
+              cd /src && \
+              CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /minio .
+
+          FROM alpine:3.20
+          RUN apk add --no-cache ca-certificates curl tzdata
+          COPY --from=builder /minio /usr/bin/minio
+          RUN printf '#!/bin/sh\nif [ "${1}" != "minio" ]; then set -- minio "$@"; fi\nexec "$@"\n' > /usr/bin/docker-entrypoint.sh && \
+              chmod +x /usr/bin/docker-entrypoint.sh
+          EXPOSE 9000 9001
+          ENTRYPOINT ["/usr/bin/docker-entrypoint.sh"]
+          EOF
+          docker build -f Dockerfile.minio -t minio/minio:latest .
+
+          # 若编排文件中用到了 minio/mc 初始化存储桶，一并从源码编译
+          if grep -q "minio/mc" "$COMPOSE_FILE"; then
+            cat << 'EOF' > Dockerfile.mc
+          FROM golang:1.24-alpine AS builder
+          RUN apk add --no-cache git
+          ENV GOTOOLCHAIN=auto
+          RUN git clone --depth 1 https://github.com/minio/mc.git /src && \
+              cd /src && \
+              CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /mc .
+
+          FROM alpine:3.20
+          RUN apk add --no-cache ca-certificates curl
+          COPY --from=builder /mc /usr/bin/mc
+          ENTRYPOINT ["mc"]
+          EOF
+            docker build -f Dockerfile.mc -t minio/mc:latest .
+          fi
+
+          # 生成预编译镜像覆盖文件（直接使用官方 :main 镜像，跳过其余组件编译）
           cat << 'EOF' > docker-compose.images.yml
           services:
             api:
@@ -63,17 +100,21 @@ jobs:
           COMPOSE_FILE="docker-compose.yaml"
           [ ! -f "$COMPOSE_FILE" ] && COMPOSE_FILE="docker-compose.yml"
 
-          # 拉取编排文件中定义的所有核心服务 + Redis + MinIO 镜像
-          docker compose -f "$COMPOSE_FILE" -f docker-compose.images.yml pull
+          # 拉取其余远程镜像（跳过已在本地构建好的 minio 远程校验）
+          docker compose -f "$COMPOSE_FILE" -f docker-compose.images.yml pull --ignore-pull-failures
           # 额外拉取无 KVM 模式的沙箱镜像作为备用
           docker pull ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct:main
 
-          # 汇总去重后导出为单个压缩包
+          # 汇总去重并校验所有镜像均已完整就绪
           ALL_IMAGES=$( (docker compose -f "$COMPOSE_FILE" -f docker-compose.images.yml config --images; echo "ghcr.io/librechat-ai/code-interpreter-sandbox-runner-direct:main") | sort -u )
-          echo "即将打包以下镜像："
-          echo "$ALL_IMAGES"
+          echo "校验并打包以下镜像："
+          for img in $ALL_IMAGES; do
+            echo " - $img"
+            docker image inspect "$img" >/dev/null
+          done
+
           docker save $(echo "$ALL_IMAGES" | tr '\n' ' ') | gzip > ../code-interpreter-images.tar.gz
-          rm -rf .git
+          rm -rf .git Dockerfile.minio Dockerfile.mc
 
       - name: 3. 上传离线包供下载
         uses: actions/upload-artifact@v4
