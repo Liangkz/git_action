@@ -1,0 +1,54 @@
+name: Export Octop Docker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '镜像标签'
+        required: true
+        default: '1.0.3b6-full'
+      platform:
+        description: '内网服务器架构'
+        required: true
+        type: choice
+        options:
+          - linux/amd64
+          - linux/arm64
+        default: 'linux/amd64'
+
+permissions:
+  contents: write
+
+jobs:
+  export-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Free up disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /usr/local/lib/android
+          df -h
+
+      - name: Pull Octop image
+        run: |
+          docker pull --platform ${{ inputs.platform }} ghcr.io/tencentcloud/octop:${{ inputs.tag }}
+
+      - name: Save, compress and split image
+        run: |
+          mkdir -p dist
+          ARCH_NAME=$(echo "${{ inputs.platform }}" | tr '/' '-')
+          ARCHIVE="octop-${{ inputs.tag }}-${ARCH_NAME}.tar.gz"
+          
+          docker save "ghcr.io/tencentcloud/octop:${{ inputs.tag }}" | gzip > "dist/${ARCHIVE}"
+          # 按 1800MB 分卷，规避 GitHub Release 单文件 2GB 上限
+          split -b 1800M -d "dist/${ARCHIVE}" "dist/${ARCHIVE}.part-"
+          rm -f "dist/${ARCHIVE}"
+          
+          cd dist && sha256sum * > sha256sum.txt
+          ls -lh
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: octop-${{ inputs.tag }}-${{ github.run_number }}
+          name: Octop Offline Image (${{ inputs.tag }} / ${{ inputs.platform }})
+          files: dist/*
