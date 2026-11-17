@@ -1,0 +1,78 @@
+name: 打包 Octop (Full 完整版) 离线包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack-octop:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 获取并准备 Octop Full 镜像
+        run: |
+          git clone --depth 1 https://github.com/TencentCloud/Octop.git
+          cd Octop
+
+          # 提取源码版本与 GitHub 最新 Release 版本号
+          SRC_VER=$(grep -E '^version\s*=' pyproject.toml | head -n 1 | cut -d'"' -f2)
+          REL_VER=$(curl -s https://api.github.com/repos/TencentCloud/Octop/releases/latest | grep -E '"tag_name":' | cut -d'"' -f4 | sed 's/^v//')
+          echo "源码版本: ${SRC_VER} | 最新 Release 版本: ${REL_VER}"
+
+          PULLED_IMAGE=""
+
+          # 1. 优先从 ghcr.io 拉取官方预编译的 -full 镜像（约 1~2 分钟）
+          for TAG in "${REL_VER}-full" "${SRC_VER}-full" "latest-full" "full"; do
+            [ "$TAG" = "-full" ] && continue
+            CANDIDATE="ghcr.io/tencentcloud/octop:${TAG}"
+            echo "尝试拉取: $CANDIDATE ..."
+            if docker pull "$CANDIDATE" 2>/dev/null; then
+              PULLED_IMAGE="$CANDIDATE"
+              echo "成功拉取预编译镜像: $PULLED_IMAGE"
+              break
+            fi
+          done
+
+          # 2. 若未匹配到，则解析仓库内 docker-compose.cn.yml 中的镜像地址并尝试 -full 标签
+          if [ -z "$PULLED_IMAGE" ] && [ -f deploy/docker/docker-compose.cn.yml ]; then
+            CN_IMG=$(grep -E 'image:' deploy/docker/docker-compose.cn.yml | head -n 1 | awk '{print $2}' | tr -d '"' | tr -d "'")
+            if [ -n "$CN_IMG" ]; then
+              BASE_IMG="${CN_IMG%:*}"
+              for TAG in "${REL_VER}-full" "${SRC_VER}-full" "latest-full" "full"; do
+                [ "$TAG" = "-full" ] && continue
+                if docker pull "${BASE_IMG}:${TAG}" 2>/dev/null; then
+                  PULLED_IMAGE="${BASE_IMG}:${TAG}"
+                  echo "成功拉取镜像: $PULLED_IMAGE"
+                  break
+                fi
+              done
+            fi
+          fi
+
+          # 3. 兜底：若官方暂未发布对应版本的 -full 镜像，调用官方脚本云端编译完整版
+          if [ -z "$PULLED_IMAGE" ]; then
+            echo "未匹配到现成 -full 标签，切换为云端源码编译 Full 镜像..."
+            sed -i 's|docker.m.daocloud.io/library/||g' deploy/docker/Dockerfile* 2>/dev/null || true
+            bash deploy/docker/docker_build.sh --full || bash deploy/docker/docker_build.sh
+            PULLED_IMAGE=$(docker images --format "{{.Repository}}:{{.Tag}}" | grep -i octop | head -n 1)
+          fi
+
+          if [ -z "$PULLED_IMAGE" ]; then
+            echo "错误：未能获取或构建 Octop Full 镜像。"
+            exit 1
+          fi
+
+          # 统一打上固定标签 octop:full，方便内网直接启动
+          docker tag "$PULLED_IMAGE" octop:full
+
+      - name: 2. 导出并压缩离线镜像
+        run: |
+          docker save octop:full | gzip > octop-full-image.tar.gz
+          rm -rf Octop/.git
+
+      - name: 3. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: octop-full-offline-bundle
+          path: |
+            octop-full-image.tar.gz
+            Octop/deploy/docker/
+            Octop/.env.example
