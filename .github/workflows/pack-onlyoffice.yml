@@ -1,0 +1,47 @@
+name: 打包 ONLYOFFICE DocumentServer 离线包
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'ONLYOFFICE 镜像版本 (例如 latest, 8.2, 8.1)'
+        required: true
+        default: 'latest'
+        type: string
+
+jobs:
+  pack-onlyoffice:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 准备部署目录与 docker-compose.yml
+        run: |
+          mkdir -p onlyoffice-deploy
+          cat << 'EOF' > onlyoffice-deploy/docker-compose.yml
+          services:
+            onlyoffice-documentserver:
+              image: onlyoffice/documentserver:${{ inputs.image_tag }}
+              container_name: onlyoffice-documentserver
+              restart: always
+              ports:
+                - "8080:80"
+              environment:
+                - JWT_ENABLED=true
+                - JWT_SECRET=my_super_secret_jwt_key_123
+              volumes:
+                - ./data/logs:/var/log/onlyoffice
+                - ./data/data:/var/www/onlyoffice/Data
+                - ./data/lib:/var/lib/onlyoffice
+                - ./data/db:/var/lib/postgresql
+          EOF
+
+      - name: 2. 拉取官方镜像并压缩打包
+        run: |
+          IMAGE_NAME="onlyoffice/documentserver:${{ inputs.image_tag }}"
+          docker pull $IMAGE_NAME
+          docker save $IMAGE_NAME | gzip > onlyoffice-deploy/onlyoffice-images.tar.gz
+
+      - name: 3. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: onlyoffice-offline-bundle-${{ inputs.image_tag }}
+          path: onlyoffice-deploy/
