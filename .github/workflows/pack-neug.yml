@@ -1,0 +1,78 @@
+name: 打包 NeuG 离线包
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pack-neug:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 1. 克隆 NeuG 仓库并下载离线 Python Wheel 包
+        run: |
+          git clone --depth 1 https://github.com/alibaba/neug.git
+          mkdir -p neug-wheels
+          # 下载适用于 Linux x86_64 的预编译 whl 包（方便内网其他 Python 环境直接离线 pip install）
+          pip download neug --platform manylinux2014_x86_64 --only-binary=:all: -d neug-wheels || pip download neug -d neug-wheels
+
+      - name: 2. 构建 NeuG 服务端 Docker 镜像 (neug:latest)
+        run: |
+          cat << 'EOF' > Dockerfile.neug
+          FROM python:3.11-slim-bookworm
+          WORKDIR /app
+          RUN pip install --no-cache-dir neug
+          COPY neug/example_dataset /app/example_dataset
+
+          # 生成自适应启动脚本：自动挂载持久化库目录并以 Service 模式对外提供服务
+          RUN cat << 'PY' > /app/entrypoint.py
+          import inspect
+          import os
+          import time
+          import neug
+
+          db_path = os.environ.get("NEUG_DB_PATH", "/data/neug.db")
+          host = os.environ.get("NEUG_HOST", "0.0.0.0")
+          port = int(os.environ.get("NEUG_PORT", "10000"))
+
+          os.makedirs(os.path.dirname(db_path), exist_ok=True)
+          db = neug.Database(db_path)
+
+          # 自动加载常用内置扩展（向量检索与全文检索）
+          try:
+              conn = db.connect()
+              for ext in ["vector_search", "fts"]:
+                  try:
+                      conn.execute(f"LOAD {ext};")
+                  except Exception as e:
+                      print(f"Skip loading {ext}: {e}")
+          except Exception as e:
+              print(f"Init connection notice: {e}")
+
+          sig = inspect.signature(db.serve)
+          kwargs = {}
+          if "host" in sig.parameters:
+              kwargs["host"] = host
+          if "port" in sig.parameters:
+              kwargs["port"] = port
+
+          print(f"Starting NeuG server on {host}:{port}, db={db_path} ...", flush=True)
+          res = db.serve(**kwargs)
+          while True:
+              time.sleep(3600)
+          PY
+
+          EXPOSE 10000
+          CMD ["python", "/app/entrypoint.py"]
+          EOF
+
+          docker build -f Dockerfile.neug -t neug:latest .
+          docker save neug:latest | gzip > neug-image.tar.gz
+          rm -rf neug/.git Dockerfile.neug
+
+      - name: 3. 上传离线包供下载
+        uses: actions/upload-artifact@v4
+        with:
+          name: neug-offline-bundle
+          path: |
+            neug-image.tar.gz
+            neug-wheels/
+            neug/example_dataset/
